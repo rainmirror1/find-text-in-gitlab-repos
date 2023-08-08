@@ -1,0 +1,20 @@
+{
+  "name": "find-usage",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">= 20"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "node-fetch": "^3.3.2",
+    "tar-stream": "^3.1.6"
+  }
+}
