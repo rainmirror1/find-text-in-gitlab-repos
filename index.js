@@ -8,14 +8,18 @@ import tar from "tar-stream";
 import zlib from "zlib";
 import readline from "readline";
 import chalk from "chalk";
+import prompt from 'password-prompt';
 
 const gitLabBaseUrl = "https://gitlab.com/api/v4";
-const gitLabToken = "{access_toke}"; //TODO: password prompt for access token
-const headers = {
-  "Private-Token": gitLabToken,
-};
+let gitLabToken;
 
 const repos = [];
+
+const getHeaders = () => {
+  return {
+    "Private-Token": gitLabToken,
+  };
+}
 
 const printMemUsage = () => {
   const formatMemoryUsage = (data) =>
@@ -40,6 +44,7 @@ const printMemUsage = () => {
 
 const fetchSubgroupByGroupId = async (groupId) => {
   const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(groupId)}/subgroups`;
+  const headers = getHeaders();
   const response = await fetch(url, { headers });
   if (!response.ok) {
     throw new Error(
@@ -52,6 +57,7 @@ const fetchSubgroupByGroupId = async (groupId) => {
 const fetchProjectsUnderGroup = async (groupId) => {
   console.log("Fetching projects under group:", groupId)
   const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(groupId)}/projects`;
+  const headers = getHeaders();
   const response = await fetch(url, { headers });
   if (!response.ok) {
     throw new Error(
@@ -65,9 +71,7 @@ const fetchRepositoryByReference = async (projectId, ref) => {
   const url = `${gitLabBaseUrl}/projects/${encodeURIComponent(
     projectId
   )}/repository/archive.tar.gz?sha=${encodeURIComponent(ref)}`;
-  const headers = {
-    "Private-Token": gitLabToken,
-  };
+  const headers = getHeaders();
 
   const response = await fetch(url, { headers });
   if (!response.ok) {
@@ -133,6 +137,8 @@ await (async () => {
     console.log("Usage: gitlab-repo-search <group_id> <ref> <search_text> <search_text>...");
     return;
   }
+
+  gitLabToken = await prompt('Access token: ')
 
   let projects = [];
   try {
