@@ -10,9 +10,11 @@ import readline from 'readline';
 import prompt from 'password-prompt';
 import { program } from 'commander';
 import { logger, resultLogger } from './logger.js';
+import { URLSearchParams } from 'node:url';
 
 const gitLabBaseUrl = 'https://gitlab.com/api/v4';
 let gitLabToken;
+const itemsPerPage = 50;
 
 const repos = [];
 
@@ -40,13 +42,17 @@ const printMemUsage = () => {
     external: `${formatMemoryUsage(memoryData.external)} -> V8 external memory`,
   };
 
-  logger.debug(memoryUsage);
+  logger.debug(JSON.stringify(memoryUsage, null, 2));
 };
 
-const fetchSubgroupByGroupId = async (groupId) => {
+const fetchSubgroupByGroupId = async (groupId, page) => {
+  const param = new URLSearchParams({
+    page: page || 1,
+    per_page: itemsPerPage,
+  });
   const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(
     groupId
-  )}/subgroups`;
+  )}/subgroups?${param.toString()}`;
   const headers = getHeaders();
   const response = await fetch(url, { headers });
   if (!response.ok) {
@@ -54,20 +60,43 @@ const fetchSubgroupByGroupId = async (groupId) => {
       `Failed to fetch subgroup: ${response.status} ${response.statusText}`
     );
   }
-  return response.json();
+
+  let nextPageResponse = [];
+  const nextPage = response.headers?.get('x-next-page');
+  if (nextPage) {
+    nextPageResponse = await fetchSubgroupByGroupId(groupId, nextPage);
+  }
+
+  const respJson = await response.json();
+  return respJson.concat(nextPageResponse);
 };
 
-const fetchProjectsUnderGroup = async (groupId) => {
-  logger.verbose('Fetching projects under group:', groupId);
-  const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(groupId)}/projects`;
+const fetchProjectsUnderGroup = async (groupId, page) => {
+  logger.verbose('Fetching projects under group: %s', groupId);
+  const param = new URLSearchParams({
+    page: page || 1,
+    per_page: itemsPerPage,
+  });
+  const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(
+    groupId
+  )}/projects?${param.toString()}`;
   const headers = getHeaders();
+
   const response = await fetch(url, { headers });
   if (!response.ok) {
     throw new Error(
       `Failed to fetch repository: ${response.status} ${response.statusText}`
     );
   }
-  return response.json();
+
+  let nextPageResponse = [];
+  const nextPage = response.headers?.get('x-next-page');
+  if (nextPage) {
+    nextPageResponse = await fetchProjectsUnderGroup(groupId, nextPage);
+  }
+
+  const respJson = await response.json();
+  return respJson.concat(nextPageResponse);
 };
 
 const fetchRepositoryByReference = async (projectId, ref) => {
@@ -112,7 +141,7 @@ const searchInSourceCode = (header, fileStream, next, searchText) => {
       resolve(found);
     });
     fileStream.on('error', (error) => {
-      logger.error('Error occurred:', header.name, error?.message);
+      logger.error('Error occurred: %s %s', header.name, error?.message);
       reject(error?.message);
     });
     rl.on('close', () => {
@@ -141,20 +170,24 @@ await (async () => {
       '--ref <ref...>',
       'Git referece, could be multiple values, would use next ref when not found on repo, default to main',
       ['main']
-    );
+    )
+    .option('--access-token <token>', 'Personal access token');
 
   program.parse();
   const options = program.opts();
   const searchText = program.args;
 
-  gitLabToken = await prompt('Access token: ');
+  gitLabToken = options.accessToken;
+  if (!gitLabToken) {
+    gitLabToken = await prompt('Access token: ');
+  }
 
   let projects = [];
   try {
     projects = JSON.parse(await readFile('projects.json'));
     logger.debug('Using project list from file');
   } catch (error) {
-    logger.warn('Cannot read projects from file, begin fetching...', error);
+    logger.warn('Cannot read projects from file, begin fetching... %s', error);
   }
   if (!Array.isArray(projects) || projects.length === 0) {
     projects = await fetchAllProjectRecursive(options.groupId);
@@ -215,7 +248,7 @@ await (async () => {
 
     tarExtractor.on('finish', () => {
       finishPromiseResolver();
-      logger.verbose('Done finding on ', projectId);
+      logger.verbose('Done finding on %s', projectId);
     });
 
     try {
@@ -235,13 +268,13 @@ await (async () => {
               'Text found on %s with the following files:',
               project.name_with_namespace
             );
-          resultLogger.info(oneResult.name, oneResult.text);
+          resultLogger.info('%s - %s', oneResult.name, oneResult.text);
           foundOne = true;
         });
       }
     });
     if (!foundOne) {
-      resultLogger.info('Text not found on', project.name_with_namespace);
+      resultLogger.info('Text not found on %s', project.name_with_namespace);
     }
 
     await setTimeout(15000); // avoid rate limit of getting project archive at 4 per minute
