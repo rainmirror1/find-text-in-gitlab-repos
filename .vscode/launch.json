@@ -12,7 +12,7 @@
                 "<node_internals>/**"
             ],
             "program": "${workspaceFolder}/index.js",
-            "args": [ "{group_id}", "{ref}", "{text_1}", "{text_2}"]
+            "args": [ "--group-id", "{group_id}", "--", "{text_1}", "{text_2}"]
         }
     ]
 }

@@ -1,25 +1,26 @@
 #!/usr/bin/env node
 
-import fetch from "node-fetch";
-import { pipeline } from "node:stream/promises";
-import { readFile, writeFile } from "node:fs/promises";
-import { setTimeout } from 'timers/promises';
-import tar from "tar-stream";
-import zlib from "zlib";
-import readline from "readline";
-import chalk from "chalk";
+import { pipeline } from 'node:stream/promises';
+import { readFile, writeFile } from 'node:fs/promises';
+import { setTimeout } from 'node:timers/promises';
+import fetch from 'node-fetch';
+import tar from 'tar-stream';
+import zlib from 'zlib';
+import readline from 'readline';
 import prompt from 'password-prompt';
+import { program } from 'commander';
+import { logger, resultLogger } from './logger.js';
 
-const gitLabBaseUrl = "https://gitlab.com/api/v4";
+const gitLabBaseUrl = 'https://gitlab.com/api/v4';
 let gitLabToken;
 
 const repos = [];
 
 const getHeaders = () => {
   return {
-    "Private-Token": gitLabToken,
+    'Private-Token': gitLabToken,
   };
-}
+};
 
 const printMemUsage = () => {
   const formatMemoryUsage = (data) =>
@@ -39,11 +40,13 @@ const printMemUsage = () => {
     external: `${formatMemoryUsage(memoryData.external)} -> V8 external memory`,
   };
 
-  console.debug(memoryUsage);
+  logger.debug(memoryUsage);
 };
 
 const fetchSubgroupByGroupId = async (groupId) => {
-  const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(groupId)}/subgroups`;
+  const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(
+    groupId
+  )}/subgroups`;
   const headers = getHeaders();
   const response = await fetch(url, { headers });
   if (!response.ok) {
@@ -55,7 +58,7 @@ const fetchSubgroupByGroupId = async (groupId) => {
 };
 
 const fetchProjectsUnderGroup = async (groupId) => {
-  console.log("Fetching projects under group:", groupId)
+  logger.verbose('Fetching projects under group:', groupId);
   const url = `${gitLabBaseUrl}/groups/${encodeURIComponent(groupId)}/projects`;
   const headers = getHeaders();
   const response = await fetch(url, { headers });
@@ -93,7 +96,7 @@ const fetchAllProjectRecursive = async (groupId) => {
   }
 
   return projects;
-}
+};
 
 const searchInSourceCode = (header, fileStream, next, searchText) => {
   return new Promise((resolve, reject) => {
@@ -104,22 +107,22 @@ const searchInSourceCode = (header, fileStream, next, searchText) => {
       crlfDelay: Infinity,
     });
 
-    fileStream.on("end", () => {
+    fileStream.on('end', () => {
       next();
       resolve(found);
     });
-    fileStream.on("error", (error) => {
-      console.error(chalk.bgRed("Error occurred: ", header.name, error?.message));
+    fileStream.on('error', (error) => {
+      logger.error('Error occurred:', header.name, error?.message);
       reject(error?.message);
     });
     rl.on('close', () => {
-      fileStream.resume()
-    })
-    rl.on("line", (line) => {
+      fileStream.resume();
+    });
+    rl.on('line', (line) => {
       searchText.forEach((oneSearchText) => {
         if (line.includes(oneSearchText)) {
-          console.log(chalk.bgGreen("Found ", oneSearchText, " at: ", header.name));
-          found.push({name: header.name, text: oneSearchText});
+          logger.verbose('Found %s at: %s', oneSearchText, header.name);
+          found.push({ name: header.name, text: oneSearchText });
           foundNum++;
         }
       });
@@ -131,24 +134,30 @@ const searchInSourceCode = (header, fileStream, next, searchText) => {
 };
 
 await (async () => {
-  const [_, __, groupId, ref, ...searchText] = process.argv;
+  program
+    .usage('[options] -- <search text...>')
+    .requiredOption('--group-id <group>', "Gitlab's group ID")
+    .option(
+      '--ref <ref...>',
+      'Git referece, could be multiple values, would use next ref when not found on repo, default to main',
+      ['main']
+    );
 
-  if (!groupId || !ref || searchText.length === 0) {
-    console.log("Usage: gitlab-repo-search <group_id> <ref> <search_text> <search_text>...");
-    return;
-  }
+  program.parse();
+  const options = program.opts();
+  const searchText = program.args;
 
-  gitLabToken = await prompt('Access token: ')
+  gitLabToken = await prompt('Access token: ');
 
   let projects = [];
   try {
     projects = JSON.parse(await readFile('projects.json'));
-    console.log("Using project list from file");
+    logger.debug('Using project list from file');
   } catch (error) {
-    console.warn("Cannot read projects from file, begin fetching...", error);
+    logger.warn('Cannot read projects from file, begin fetching...', error);
   }
   if (!Array.isArray(projects) || projects.length === 0) {
-    projects = await fetchAllProjectRecursive(groupId);
+    projects = await fetchAllProjectRecursive(options.groupId);
     await writeFile('projects.json', JSON.stringify(projects));
   }
 
@@ -157,12 +166,30 @@ await (async () => {
     const gunzipStream = zlib.createGunzip();
     const tarExtractor = tar.extract();
 
-    console.log(`Fetching repository '${projectId}' at reference '${ref}'...`);
+    let found = false;
     let archivedRepoResp;
-    try {
-      archivedRepoResp = await fetchRepositoryByReference(projectId, ref);
-    } catch (error) {
-      console.warn("Skipping", project.name_with_namespace, "because of", error.message);
+    for (const ref of options.ref) {
+      logger.verbose(
+        "Fetching repository '%s' at reference '%s'...",
+        projectId,
+        ref
+      );
+      try {
+        archivedRepoResp = await fetchRepositoryByReference(projectId, ref);
+        found = true;
+      } catch (error) {
+        logger.warn(
+          'Skipping %s because of %s',
+          project.name_with_namespace,
+          error.message
+        );
+      }
+      if (found) {
+        break;
+      }
+      await setTimeout(15000); // avoid rate limit of getting project archive at 4 per minute
+    }
+    if (!found) {
       continue;
     }
 
@@ -172,43 +199,49 @@ await (async () => {
       finishPromiseResolver = resolve;
     });
 
-    tarExtractor.on("entry", (header, stream, next) => {
-      if (header?.type === "file") {
+    tarExtractor.on('entry', (header, stream, next) => {
+      if (header?.type === 'file') {
         printMemUsage();
-        searchPromises.push(searchInSourceCode(header, stream, next, searchText));
+        searchPromises.push(
+          searchInSourceCode(header, stream, next, searchText)
+        );
       } else {
         stream.on('end', () => {
           next(); // simply next entry when not a file
-        })
+        });
         stream.resume(); // just auto drain the stream
       }
     });
 
-    tarExtractor.on("finish", () => {
+    tarExtractor.on('finish', () => {
       finishPromiseResolver();
-      console.log("Done finding on ", projectId);
+      logger.verbose('Done finding on ', projectId);
     });
 
     try {
       await pipeline(archivedRepoResp.body, gunzipStream, tarExtractor);
     } catch (e) {
-      console.error(e);
+      logger.error(e);
     }
 
-    await finishPromise
+    await finishPromise;
     const searchResults = await Promise.all(searchPromises);
     let foundOne = false;
     searchResults.forEach((fileResult) => {
       if (Array.isArray(fileResult) && fileResult.length > 0) {
         fileResult.forEach((oneResult) => {
-          foundOne || console.log(chalk.bgWhite.black("Text found on", project.name_with_namespace, "with the following files:"));
-          console.log(oneResult.name, oneResult.text);
+          foundOne ||
+            resultLogger.info(
+              'Text found on %s with the following files:',
+              project.name_with_namespace
+            );
+          resultLogger.info(oneResult.name, oneResult.text);
           foundOne = true;
-        })
+        });
       }
     });
     if (!foundOne) {
-      console.log("Text not found on", project.name_with_namespace);
+      resultLogger.info('Text not found on', project.name_with_namespace);
     }
 
     await setTimeout(15000); // avoid rate limit of getting project archive at 4 per minute
